@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>cc-doctor — is your Claude Code setup optimal?</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="src/styles.css" />
+</head>
+<body>
+<div id="root">
+  <div class="boot">Loading your Claude Code setup…</div>
+</div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+
+<script src="src/data.js"></script>
+<script type="text/babel" src="src/charts.jsx"></script>
+<script type="text/babel" src="src/rater.jsx"></script>
+<script type="text/babel" src="src/table.jsx"></script>
+<script type="text/babel" src="src/drawer.jsx"></script>
+<script type="text/babel" src="src/systemmap.jsx"></script>
+<script type="text/babel" src="src/app.jsx"></script>
+
+<script type="text/babel">
+  (async function boot() {
+    try {
+      if (!window.__DATA_READY__) {
+        await new Promise((resolve, reject) => {
+          window.__onDataReady = resolve;
+          window.__onDataError = reject;
+          setTimeout(() => reject(new Error('Data load timed out')), 30000);
+        });
+      }
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<App />);
+    } catch (err) {
+      document.getElementById('root').innerHTML =
+        '<div class="boot boot-error"><h2>Couldn\u2019t load your setup</h2><pre>' +
+        String(err && err.message || err).replace(/[<>&]/g, (c) => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])) +
+        '</pre><p>Check the terminal where you ran <code>cc-doctor</code> for details.</p></div>';
+    }
+  })();
+</script>
+</body>
+</html>
