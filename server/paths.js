@@ -4,6 +4,13 @@ const fs = require('fs');
 
 const CLAUDE_HOME = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const DOCTOR_HOME = path.join(os.homedir(), '.cc-doctor');
+const COWORK_HOME = path.join(
+  os.homedir(),
+  'Library',
+  'Application Support',
+  'Claude',
+  'local-agent-mode-sessions'
+);
 
 function ensureDir(p) {
   try { fs.mkdirSync(p, { recursive: true }); } catch (_) {}
@@ -58,6 +65,7 @@ function isoDate(ts) {
 
 module.exports = {
   CLAUDE_HOME,
+  COWORK_HOME,
   DOCTOR_HOME,
   DAYS,
   ensureDir,

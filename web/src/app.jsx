@@ -32,12 +32,27 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "timeWindow": "30d"
 }/*EDITMODE-END*/;
 
+const RUNTIME_LABELS = {
+  cli: { label: 'Claude Code CLI', sub: 'terminal' },
+  cowork: { label: 'Claude Desktop', sub: 'cowork · macOS app' },
+};
+
 const App = () => {
   const D = window.__DATA__;
   const [currentSection, setCurrentSection] = React.useState('overview');
   const [selected, setSelected] = React.useState(null);
   const [query, setQuery] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState('all');
+  const [runtimeFilter, setRuntimeFilter] = React.useState('all');
+
+  const runtimes = D.runtimes || [];
+  const showRuntimeStrip = runtimes.length >= 2;
+  // Collapse to 'all' if the selected runtime isn't present (stale persisted
+  // filter, laptop switch) without storing a second piece of state.
+  const effectiveRuntime =
+    runtimeFilter === 'all' || runtimes.some((r) => r.id === runtimeFilter)
+      ? runtimeFilter
+      : 'all';
 
   // Tweaks state
   const [tweaksOpen, setTweaksOpen] = React.useState(false);
@@ -92,18 +107,6 @@ const App = () => {
   // Today formatted
   const todayStr = D.today.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 
-  // Sidebar counts
-  const counts = {
-    overview: null,
-    skills: D.skills.length,
-    plugins: D.plugins.length,
-    mcps: D.mcps.length,
-    hooks: D.hooks.length,
-    claudemds: D.claudemds.length,
-    settings: D.settings.length,
-  };
-
-  // Filter
   const filterItems = (items) => {
     let r = items;
     if (statusFilter !== 'all') r = r.filter((x) => x.status === statusFilter);
@@ -121,6 +124,41 @@ const App = () => {
 
   const isOverview = currentSection === 'overview';
   const activeSection = SECTIONS.find((s) => s.id === currentSection);
+
+  // Session totals don't partition across runtimes today, so those pass through
+  // unchanged. Everything else gets filtered once here, and downstream code
+  // reads from Dfiltered — no repeated filter passes per render.
+  const Dfiltered = React.useMemo(() => {
+    if (effectiveRuntime === 'all') return D;
+    const filt = (arr) => (arr || []).filter((x) => x.runtime === effectiveRuntime);
+    const filteredAll = filt(D.all);
+    const ids = new Set(filteredAll.map((x) => x.id));
+    return {
+      ...D,
+      skills: filt(D.skills),
+      plugins: filt(D.plugins),
+      mcps: filt(D.mcps),
+      hooks: filt(D.hooks),
+      claudemds: filt(D.claudemds),
+      settings: filt(D.settings),
+      all: filteredAll,
+      activeCount: filteredAll.filter((x) => x.status === 'active').length,
+      dormantCount: filteredAll.filter((x) => x.status === 'dormant' || x.status === 'inactive').length,
+      errorCount: filteredAll.filter((x) => x.status === 'error' || x.status === 'missing').length,
+      totalInvocations: filteredAll.reduce((s, x) => s + (x.invocations || 0), 0),
+      scoreboard: (D.scoreboard || []).filter((s) => ids.has(s.id)),
+    };
+  }, [D, effectiveRuntime]);
+
+  const counts = {
+    overview: null,
+    skills: Dfiltered.skills.length,
+    plugins: Dfiltered.plugins.length,
+    mcps: Dfiltered.mcps.length,
+    hooks: Dfiltered.hooks.length,
+    claudemds: Dfiltered.claudemds.length,
+    settings: Dfiltered.settings.length,
+  };
 
   return (
     <>
@@ -220,13 +258,26 @@ const App = () => {
             </div>
           </div>
 
+          {showRuntimeStrip && (
+            <RuntimeStrip
+              runtimes={runtimes}
+              total={D.all.length}
+              activeFilter={effectiveRuntime}
+              onPick={setRuntimeFilter}
+            />
+          )}
+
           {isOverview ? (
-            <OverviewView D={D} onNav={(id, ent) => { setCurrentSection(id); setSelected(ent || null); }} onSelect={(e) => setSelected(e)} />
+            <OverviewView
+              D={Dfiltered}
+              onNav={(id, ent) => { setCurrentSection(id); setSelected(ent || null); }}
+              onSelect={setSelected}
+            />
           ) : (
             <SectionView
               section={activeSection}
-              items={D[activeSection.data]}
-              filtered={filterItems(D[activeSection.data])}
+              items={Dfiltered[activeSection.data]}
+              filtered={filterItems(Dfiltered[activeSection.data])}
               query={query}
               setQuery={setQuery}
               statusFilter={statusFilter}
@@ -298,6 +349,43 @@ const App = () => {
     </>
   );
 };
+
+// ==================== Runtime Strip ====================
+// Only rendered when two or more runtimes are detected; scopes the whole
+// dashboard to one runtime. Usage metrics recompute over the filtered subset.
+const RuntimeStrip = ({ runtimes, total, activeFilter, onPick }) => {
+  const tiles = [
+    { id: 'all', label: 'All runtimes', sub: 'combined view', items: total, active: null },
+    ...runtimes.map((r) => ({
+      ...r,
+      label: (RUNTIME_LABELS[r.id] && RUNTIME_LABELS[r.id].label) || r.id,
+      sub: (RUNTIME_LABELS[r.id] && RUNTIME_LABELS[r.id].sub) || '',
+    })),
+  ];
+  return (
+    <div className="runtime-strip">
+      {tiles.map((t) => (
+        <button
+          key={t.id}
+          className={`runtime-tile ${t.id === activeFilter ? 'on' : ''}`}
+          onClick={() => onPick(t.id)}
+        >
+          <div className="runtime-tile-head">
+            <span className="runtime-tile-label">{t.label}</span>
+            <span className={`runtime-tile-badge runtime-badge-${t.id}`}>{t.id.toUpperCase()}</span>
+          </div>
+          <div className="runtime-tile-count">
+            {t.items}
+            {t.active != null && <span className="runtime-tile-active">{t.active} active</span>}
+          </div>
+          <div className="runtime-tile-sub">{t.sub || '—'}</div>
+        </button>
+      ))}
+    </div>
+  );
+};
+
+Object.assign(window, { RuntimeStrip });
 
 // ==================== Overview ====================
 const OverviewView = ({ D, onNav, onSelect }) => {

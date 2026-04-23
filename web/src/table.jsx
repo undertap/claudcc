@@ -3,15 +3,24 @@
 const fmtNum = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
 
 const EntityRow = ({ e, selected, onClick, maxPct }) => {
-  const fillClass = e.status === 'active' ? '' : e.status === 'error' || e.status === 'missing' ? 'muted' : 'muted';
   const trendNum = parseInt(e.sessionsTrend, 10) || 0;
+  // CLI is the implicit default — no badge needed. Any other runtime gets one,
+  // which also means single-runtime machines never see a badge at all.
+  const showBadge = e.runtime && e.runtime !== 'cli';
   return (
     <tr className={selected ? 'selected' : ''} onClick={onClick}>
       <td style={{ width: '26%' }}>
         <div className="cell-name">
           <span className={`status-dot ${e.status}`} />
           <div className="cell-name-text">
-            <div className="cell-name-label">{e.name}</div>
+            <div className="cell-name-label">
+              {e.name}
+              {showBadge && (
+                <span className={`runtime-badge runtime-badge-${e.runtime}`}>
+                  {e.runtime.toUpperCase()}
+                </span>
+              )}
+            </div>
             <div className="cell-sub">{e.source}</div>
           </div>
         </div>
@@ -76,7 +85,13 @@ const EntityTable = ({ items, selectedId, onSelect }) => {
       </thead>
       <tbody>
         {items.map((e) => (
-          <EntityRow key={e.id} e={e} selected={e.id === selectedId} onClick={() => onSelect(e)} maxPct={maxPct} />
+          <EntityRow
+            key={e.id}
+            e={e}
+            selected={e.id === selectedId}
+            onClick={() => onSelect(e)}
+            maxPct={maxPct}
+          />
         ))}
       </tbody>
     </table>

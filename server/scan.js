@@ -106,6 +106,25 @@ async function buildSnapshot() {
   }
 
   const all = [...skills, ...plugins, ...mcps, ...hooks, ...claudemds, ...settings];
+  for (const e of all) {
+    if (!e.runtime) e.runtime = 'cli';
+  }
+
+  const runtimeCounts = {};
+  for (const e of all) {
+    const r = (runtimeCounts[e.runtime] ||= { id: e.runtime, items: 0, active: 0, invocations: 0 });
+    r.items += 1;
+    if (e.status === 'active') r.active += 1;
+    r.invocations += e.invocations || 0;
+  }
+  const RUNTIME_ORDER = ['cli', 'cowork'];
+  const rank = (id) => {
+    const i = RUNTIME_ORDER.indexOf(id);
+    return i === -1 ? 99 : i;
+  };
+  const runtimes = Object.values(runtimeCounts).sort(
+    (a, b) => rank(a.id) - rank(b.id) || a.id.localeCompare(b.id)
+  );
 
   const scoreboard = all
     .filter((e) => e.score != null)
@@ -135,6 +154,7 @@ async function buildSnapshot() {
     dormantCount,
     errorCount,
     sessionsByDay: sessionAgg.sessionsByDay,
+    runtimes,
     skills,
     plugins,
     mcps,
