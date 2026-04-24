@@ -33,8 +33,8 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
 }/*EDITMODE-END*/;
 
 const RUNTIME_LABELS = {
-  cli: { label: 'Claude Code CLI', sub: 'terminal' },
-  cowork: { label: 'Claude Desktop', sub: 'cowork · macOS app' },
+  cli: 'CLI',
+  cowork: 'Desktop',
 };
 
 const App = () => {
@@ -350,37 +350,33 @@ const App = () => {
   );
 };
 
-// ==================== Runtime Strip ====================
+// ==================== Runtime Filter ====================
 // Only rendered when two or more runtimes are detected; scopes the whole
-// dashboard to one runtime. Usage metrics recompute over the filtered subset.
+// dashboard to one runtime. Compact filter-bar style — sits atop the map.
 const RuntimeStrip = ({ runtimes, total, activeFilter, onPick }) => {
-  const tiles = [
-    { id: 'all', label: 'All runtimes', sub: 'combined view', items: total, active: null },
+  const chips = [
+    { id: 'all', short: 'All', count: total },
     ...runtimes.map((r) => ({
-      ...r,
-      label: (RUNTIME_LABELS[r.id] && RUNTIME_LABELS[r.id].label) || r.id,
-      sub: (RUNTIME_LABELS[r.id] && RUNTIME_LABELS[r.id].sub) || '',
+      id: r.id,
+      short: RUNTIME_LABELS[r.id] || r.id,
+      count: r.items,
     })),
   ];
   return (
-    <div className="runtime-strip">
-      {tiles.map((t) => (
-        <button
-          key={t.id}
-          className={`runtime-tile ${t.id === activeFilter ? 'on' : ''}`}
-          onClick={() => onPick(t.id)}
-        >
-          <div className="runtime-tile-head">
-            <span className="runtime-tile-label">{t.label}</span>
-            <span className={`runtime-tile-badge runtime-badge-${t.id}`}>{t.id.toUpperCase()}</span>
-          </div>
-          <div className="runtime-tile-count">
-            {t.items}
-            {t.active != null && <span className="runtime-tile-active">{t.active} active</span>}
-          </div>
-          <div className="runtime-tile-sub">{t.sub || '—'}</div>
-        </button>
-      ))}
+    <div className="runtime-filter">
+      <span className="runtime-filter-label">View</span>
+      <div className="segmented">
+        {chips.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            className={c.id === activeFilter ? 'on' : ''}
+            onClick={() => onPick(c.id)}
+          >
+            {c.short} <span className="runtime-chip-count">{c.count}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 };

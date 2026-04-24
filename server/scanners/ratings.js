@@ -16,6 +16,7 @@ function saveRating(entry) {
   ensureDir(DOCTOR_HOME);
   const current = loadRatings();
   current.push({
+    ...entry,
     sessionId: entry.sessionId || null,
     rating: Math.max(1, Math.min(5, Math.round(entry.rating))),
     reason: entry.reason || null,

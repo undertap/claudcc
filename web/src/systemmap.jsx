@@ -8,9 +8,9 @@
 //   CLAUDE.md  — card docked to the left edge of the core
 
 const W = 1000;
-const H = 720;
+const H = 560;
 const CX = W / 2;
-const CY = 280;
+const CY = 230;
 const CORE_R = 92;
 
 const DENSITY_CAP = { plugins: 6, skills: 12, mcps: 6, hooks: 8 };
@@ -356,10 +356,10 @@ const SystemMap = ({ D, onSelect, hoveredId, setHoveredId }) => {
           </text>
         </g>
 
-        {/* ============ CLAUDE.md card — top-left, clear of skills arc ============ */}
+        {/* ============ CLAUDE.md card — top-left, stacked above plugin row ============ */}
         {claudeMd && (
           <g
-            transform={`translate(20, 40)`}
+            transform={`translate(20, 10)`}
             style={{ cursor: 'pointer', opacity: dim(claudeMd.id) }}
             onMouseEnter={() => handleEnter(claudeMd.id)}
             onMouseLeave={handleLeave}

@@ -1,21 +1,32 @@
 #!/usr/bin/env node
 
-// cc-doctor Stop hook. Claude Code invokes this after each session finishes.
-// We ask the user for a 1-5 rating + optional reason, then append the result
-// to ~/.cc-doctor/ratings.json (attributed to all tools/MCPs used in the session).
+// cc-doctor rating hook. Registered on three events:
+//   SessionEnd  → prompt whenever a session ends with any work done
+//   PreCompact  → prompt before context compaction (big natural break)
+//   Stop        → prompt only when enough work has piled up in a long session
+//                 AND the user hasn't already rated this session
 //
-// Receives session JSON on stdin:
+// Payload arrives on stdin as JSON:
 //   { session_id, transcript_path, hook_event_name, ... }
 //
 // Must exit 0 quickly — Claude Code blocks on the hook.
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const readline = require('readline');
+const { DOCTOR_HOME, ensureDir, readJsonSafe } = require('../server/paths');
+const { saveRating } = require('../server/scanners/ratings');
 
-const DOCTOR_HOME = path.join(os.homedir(), '.cc-doctor');
-const RATINGS_PATH = path.join(DOCTOR_HOME, 'ratings.json');
+const RATED_SESSIONS_PATH = path.join(DOCTOR_HOME, 'rated-sessions.json');
+
+const EVT_STOP = 'Stop';
+const EVT_SESSION_END = 'SessionEnd';
+const EVT_PRE_COMPACT = 'PreCompact';
+
+// Tuned so a quick lookup ("what day is it?") doesn't prompt, but a real
+// coding session does.
+const STOP_TOOL_USE_THRESHOLD = 10;
+const STOP_USER_TURN_THRESHOLD = 5;
 
 function readStdinJson() {
   return new Promise((resolve) => {
@@ -28,47 +39,97 @@ function readStdinJson() {
   });
 }
 
-function extractEntities(transcriptPath) {
-  const keys = new Set();
-  if (!transcriptPath) return [];
-  try {
-    const raw = fs.readFileSync(transcriptPath, 'utf8');
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue;
-      let ev; try { ev = JSON.parse(line); } catch { continue; }
-      const msg = ev.message || ev;
-      if (msg && msg.role === 'assistant' && Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-          if (block && block.type === 'tool_use' && block.name) {
-            if (block.name.startsWith('mcp__')) {
-              const server = block.name.split('__')[1];
-              if (server) keys.add('mcp:' + server);
-            } else {
-              keys.add('tool:' + block.name);
-            }
+// Walks the JSONL transcript. For Stop events we can bail the moment
+// thresholds are met — transcripts can grow to MB so short-circuiting
+// matters on long sessions.
+function analyzeTranscript(transcriptPath, shortCircuit) {
+  const entities = new Set();
+  let toolUseCount = 0;
+  let userTurnCount = 0;
+
+  if (!transcriptPath) return { entities: [], toolUseCount, userTurnCount };
+
+  let raw;
+  try { raw = fs.readFileSync(transcriptPath, 'utf8'); }
+  catch (_) { return { entities: [], toolUseCount, userTurnCount }; }
+
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let ev; try { ev = JSON.parse(line); } catch { continue; }
+    const msg = ev.message || ev;
+    if (!msg || !msg.role) continue;
+
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block && block.type === 'tool_use' && block.name) {
+          toolUseCount += 1;
+          if (block.name.startsWith('mcp__')) {
+            const server = block.name.split('__')[1];
+            if (server) entities.add('mcp:' + server);
+          } else {
+            entities.add('tool:' + block.name);
           }
         }
       }
+    } else if (msg.role === 'user' && Array.isArray(msg.content)) {
+      // A "real" user turn has at least one text block. Pure tool_result
+      // messages are the model's own tool loop, not new user input.
+      const hasText = msg.content.some((b) => b && b.type === 'text' && b.text && b.text.trim());
+      if (hasText) userTurnCount += 1;
+    } else if (msg.role === 'user' && typeof msg.content === 'string' && msg.content.trim()) {
+      userTurnCount += 1;
     }
-  } catch (_) {}
-  return [...keys];
+
+    if (shortCircuit && shortCircuit(toolUseCount, userTurnCount)) break;
+  }
+
+  return { entities: [...entities], toolUseCount, userTurnCount };
 }
 
-function ensureDir(p) { try { fs.mkdirSync(p, { recursive: true }); } catch (_) {} }
+function shouldPrompt(eventName, stats) {
+  if (stats.toolUseCount === 0) return false;
+  if (eventName === EVT_SESSION_END || eventName === EVT_PRE_COMPACT) return true;
+  if (eventName === EVT_STOP) {
+    return (
+      stats.toolUseCount >= STOP_TOOL_USE_THRESHOLD &&
+      stats.userTurnCount >= STOP_USER_TURN_THRESHOLD
+    );
+  }
+  return false;
+}
 
-function appendRating(entry) {
+function loadRatedSessions() {
+  const raw = readJsonSafe(RATED_SESSIONS_PATH, []);
+  return new Set(Array.isArray(raw) ? raw : []);
+}
+
+function markSessionRated(sessionId, existing) {
+  const set = existing || loadRatedSessions();
+  set.add(sessionId);
   ensureDir(DOCTOR_HOME);
-  let current = [];
-  try { current = JSON.parse(fs.readFileSync(RATINGS_PATH, 'utf8')); } catch (_) {}
-  if (!Array.isArray(current)) current = [];
-  current.push(entry);
-  fs.writeFileSync(RATINGS_PATH, JSON.stringify(current, null, 2));
+  fs.writeFileSync(RATED_SESSIONS_PATH, JSON.stringify([...set], null, 2));
 }
 
+// Open /dev/tty for input. Claude Code delivers the payload over stdin, so
+// by the time we prompt, stdin is closed. /dev/tty is the user's terminal
+// regardless of how the subprocess was launched (Unix only — that's fine,
+// the Mac desktop app and Linux CLI are our targets).
 function prompt(question) {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: true });
-    rl.question(question, (ans) => { rl.close(); resolve(ans.trim()); });
+    let ttyFd, inStream;
+    try {
+      ttyFd = fs.openSync('/dev/tty', 'r');
+      inStream = fs.createReadStream(null, { fd: ttyFd });
+    } catch (_) {
+      resolve('');
+      return;
+    }
+    const rl = readline.createInterface({ input: inStream, output: process.stderr, terminal: true });
+    rl.question(question, (ans) => {
+      rl.close();
+      try { inStream.destroy(); } catch (_) {}
+      resolve(ans.trim());
+    });
   });
 }
 
@@ -76,40 +137,66 @@ async function main() {
   const payload = await readStdinJson();
   const sessionId = payload.session_id || payload.sessionId || null;
   const transcriptPath = payload.transcript_path || payload.transcriptPath;
+  const eventName = payload.hook_event_name || payload.hookEventName || EVT_STOP;
 
-  const entities = extractEntities(transcriptPath);
+  const rated = loadRatedSessions();
+  if (sessionId && rated.has(sessionId)) {
+    process.exit(0);
+  }
 
-  // Ask for rating. All prompts go to stderr so they don't pollute stdout
-  // (Claude Code reads stdout for hook output in some event types).
-  process.stderr.write('\n\x1b[2m──\x1b[0m  \x1b[1mcc-doctor\x1b[0m  \x1b[2m──\x1b[0m\n');
+  // For Stop, we can bail as soon as thresholds are met — avoids walking
+  // the rest of a potentially-huge transcript for no extra information.
+  const isStop = eventName === EVT_STOP;
+  const stats = analyzeTranscript(
+    transcriptPath,
+    isStop
+      ? (tu, ut) => tu >= STOP_TOOL_USE_THRESHOLD && ut >= STOP_USER_TURN_THRESHOLD
+      : null
+  );
+  if (!shouldPrompt(eventName, stats)) {
+    process.exit(0);
+  }
+
+  const reasonHint =
+    eventName === EVT_PRE_COMPACT ? 'before compaction' :
+    eventName === EVT_SESSION_END ? 'session ending' :
+    `${stats.toolUseCount} tool uses so far`;
+
+  process.stderr.write('\n\x1b[2m──\x1b[0m  \x1b[1mcc-doctor\x1b[0m  \x1b[2m── ' + reasonHint + '\x1b[0m\n');
   process.stderr.write('Rate this session (1–5, or press Enter to skip): ');
 
   const raw = await prompt('');
-  if (!raw) {
-    process.stderr.write('  skipped.\n\n');
+
+  // Any terminal answer — valid rating, empty skip, or invalid input — means
+  // the user has seen the prompt for this session. Don't keep asking.
+  const markAndExit = (msg) => {
+    if (msg) process.stderr.write(msg);
+    if (sessionId) markSessionRated(sessionId, rated);
     process.exit(0);
-  }
+  };
+
+  if (!raw) return markAndExit('  skipped.\n\n');
+
   const rating = parseInt(raw, 10);
   if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
-    process.stderr.write('  (invalid rating, skipped)\n\n');
-    process.exit(0);
+    return markAndExit('  (invalid rating, skipped)\n\n');
   }
 
   let reason = null;
   if (rating <= 3) {
-    reason = await prompt('  What didn’t work? (optional): ');
+    reason = await prompt('  What didn\u2019t work? (optional): ');
   }
 
-  appendRating({
+  saveRating({
     sessionId,
     rating,
     reason: reason || null,
-    entities,
-    timestamp: new Date().toISOString(),
+    entities: stats.entities,
+    event: eventName,
+    toolUseCount: stats.toolUseCount,
+    userTurnCount: stats.userTurnCount,
   });
-
-  process.stderr.write('  logged. Open the dashboard with \x1b[1mnpx cc-doctor\x1b[0m\n\n');
-  process.exit(0);
+  markAndExit('  logged. Open the dashboard with \x1b[1mnpx cc-doctor\x1b[0m\n\n');
 }
 
 main().catch((err) => {
